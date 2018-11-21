@@ -1,0 +1,200 @@
+#北京市商品住房价格影响因素分析
+library(car)
+library(gvlma)
+library(MASS)
+library(leaps)
+##绘制学生化残差的函数residplot、计算预测变量的相对权重的函数relweights
+residplot <- function(fit, nbreaks = 10)
+{
+  z <- rstudent(fit)
+  hist(z, breaks = nbreaks, freq = FALSE, xlab = "Studentized Residual", 
+       main = "Distribution of Errors")
+  rug(jitter(z), col = "brown")
+  curve(dnorm(x, mean = mean(z), sd = sd(z)), add = TRUE, col = "blue", lwd = 2)
+  lines(density(z)$x, density(z)$y, col = "red", lwd = 2, lty = 2)
+  legend("topright", legend = c("Normal Curve" ,"Kernel Density Curve"), 
+         lty = 1:2, col = c("blue", "red"), cex = 0.8)
+}
+relweights <- function(fit, ...)
+{
+  R <- cor(fit$model)
+  nvar <- ncol(R)
+  rxx <- R[2:nvar, 2:nvar]
+  rxy <- R[2:nvar, 1]
+  svd <- eigen(rxx)
+  evec <- svd$vectors
+  ev <- svd$values
+  delta <- diag(sqrt(ev))
+  lambda <- evec %*% delta %*% t(evec)
+  lambdasq <- lambda ^ 2
+  beta <- solve(lambda) %*% rxy
+  rsquare <- colSums(beta ^ 2)
+  rawwgt <- lambdasq %*% beta ^ 2
+  import <- (rawwgt / rsquare) *100
+  import <- as.data.frame(import)
+  row.names(import) <- names(fit$model[2:nvar])
+  names(import) <- "Weights"
+  import <- import[order(import), 1, drop = FALSE]
+  dotchart(import$Weights, labels = row.names(import), xlab = "% of R-Square", 
+           pch = 19, main = "Relative Importance of Predictor Variables",
+           sub = paste("Total R -Square = ", round(rsquare, digits = 3)), ...)
+  return(import)
+}
+##读取经过调整后的房价数据表
+house <- read.csv("/Users/tyc_219/Library/Application Support/Kingsoft/WPS Cloud Files/userdata/qing/filecache/.230084331/cachedata/C51928D0798E481A999FE4E730BAA12E/maindata.csv", header = TRUE)
+##房价P（万元/平方米）、北京地区生产总值GDP（千亿）、北京市人均可支配收入AS（万元）、
+##城镇化率TOWN、人口密度PD（千人/平方公里）、房地产商本年投资EIA（千亿）、
+##本年商品房竣工面积COM（千万平方米）、建安成本COC（千亿）、
+##北京市长期贷款总额LOA（万亿）、商品房造价CM（千元/平方米）
+head(house)
+##计算house表中所有因素的相关系数
+cor(house)
+##使用scatterplotMatrix()函数绘制因变量与自变量的散点图矩阵
+##（包含线性和平滑拟合曲线，以及相应的边际分布（核密度图和轴须图））
+scatterplotMatrix(house, spread = FALSE, smoother.args = list(lty = 2), 
+                  main = "Scatter Plot Matrix")
+##从图中可以看出COM项明显与其他项相关性不强，故将其剔除后进行多元线性回归模型拟合
+fit <- lm(P ~ GDP + AS + TOWN + PD + EIA + COC + LOA + CM, data = house)
+summary(fit)
+##通过summary()可以得出上述模型的R-Squared为0.9858，看似很大，但是模型的截距项
+##以及自变量的相关系数均不显著
+##下面进行模型诊断
+##通过qqPlot()函数进行正态假设检验，它画出的是在n-p-1个自由度的t分布下的学生化残差
+##以及其95%的置信区间，其中n为样本大小，p为回归参数的数目。从QQ图中可以看出所有的
+##点都离直线很近且落在置信区间内，这表明正态性假设符合得很好
+qqPlot(fit, labels = row.names(house), id.method = "identify", 
+       simulate = TRUE, main = "QQ-Plot")
+##用residplot()函数绘制学生化残差分布图，从图中可以看出误差很好的服从离正态分布
+residplot(fit)
+##通过Durbin-Watson检验残差是否相互独立，p值不显著(p-value = 0.376)说明无相关性，误差项之间独立
+durbinWatsonTest(fit)
+##使用crplot()函数绘制北京市商品房房价对其他各因素回归的成分残差图，
+##此成分残差图可以证实我的线性假设
+crPlots(fit)
+##使用ncvtest()函数验证方差不变假设，由结果可以得出计分检验不显著
+##(p = 0.693)，说明满足方差不变假设
+ncvTest(fit)
+##spreadLevelPlot()函数给出的幂次变换建议是0.854十分接近1，与图一起观察可以得出
+##异方差性很不明显的结论
+spreadLevelPlot(fit)
+##使用vif()函数检验模型是否存在多重共线性(VIF为方差膨胀因子)，得出的结果可以
+##表明fit模型存在十分严重的多重共线性问题(经济模型经常会有共线性问题)
+vif(fit)
+##多重共线性的存在也验证了fit模型R-Squared很大但是自变量与截距项都不显著的现象，
+##下面使用两种方法进行多重共线性问题解决
+
+#方法一
+##通过逐步回归stepAIC()函数选择最终的预测变量(依据的是精确AIC准则)
+stepAIC(fit)
+##逐步回归选出的最佳模型是 P ~ AS + TOWN + PD + EIA + LOA，此时的AIC = -60.82，
+##下面使用全子集回归对所有可能拟合的模型进行评价，验证逐步回归法选出的模型是否就是最优模型
+leaps <- regsubsets(P ~ GDP + AS + TOWN + PD + EIA + COC + LOA + CM, data = house, nbest = 8)
+plot(leaps, scale = "adjr2")
+##可以看出逐步回归法与全子集回归法得出的最佳模型是一致的，下面拟合最佳模型，
+##拟合后的检验步骤同上
+fit1 <- lm(P ~ AS + TOWN + PD + EIA + LOA, data = house)
+summary(fit1)
+##relweights()函数生成的是该多元回归中各变量相对权重的点图
+relweights(fit1)
+qqPlot(fit1, labels = row.names(house), id.method = "identify", 
+       simulate = TRUE, main = "QQ-Plot")
+residplot(fit1)
+durbinWatsonTest(fit1)
+crPlots(fit1)
+ncvTest(fit1)
+spreadLevelPlot(fit1)
+vif(fit1)
+##通过上述检验可以发现自变量EIA的相关系数仍旧不显著，而且多重共线性依旧严重，
+##故采用主成分分析进行降维
+##use_house表为主成分分析所需要的数据表
+use_house <- read.csv("/Users/tyc_219/Library/Application Support/Kingsoft/WPS Cloud Files/userdata/qing/filecache/.230084331/cachedata/33C86977F1894C7C9A55C4434569AF0B/maindata1.csv", header = TRUE)
+library(psych)
+##通过fa.parallel()函数展示了给予观测特征值的碎石检验、根据500个随机数据矩阵
+##推导出来的特征值均值(虚线)，以及大于1的特征值准则
+fa.parallel(use_house[ , 2:6], fa = "pc", n.iter = 500, show.legend = FALSE, 
+            main = "Scree plot with parallel analysis")
+abline(h = 1, col = "yellow", lwd = 4)
+##碎石图表明选择一个主成分即可保留数据集的大部分信息，通过principal()函数进行
+##主成分提取，再将主成分得分返回到对象的scores元素中
+pc <- principal(use_house[ , 2:6], nfactors = 1, scores = TRUE)
+pc
+pc$scores
+##从结果可以得出提取出的一个主成分解释了数据集95%的信息，再由主成分得分来拟合PC项
+use_house$PC <- 0.98 * use_house$AS + 0.92 * use_house$TOWN + 0.98 * use_house$PD + 0.99 * use_house$EIA + 0.99 * use_house$LOA
+##拟合基于主成分的新模型，然后进行模型分析及诊断
+fit2 <- lm(P ~ PC, data = use_house)
+summary(fit2)
+qqPlot(fit2, labels = row.names(use_house), id.method = "identify", 
+       simulate = TRUE, main = "QQ-Plot")
+residplot(fit2)
+crPlots(fit2)
+ncvTest(fit2)
+spreadLevelPlot(fit2)
+##新的模型截距项及自变量相关系数均显著，而且R-Squared也达到了0.9409，模型满足正态性、
+##线性、同方差性，此时的模型函数为：P = -1.33689 + 0.39051PC
+
+#方法二
+##此方法是基于岭回归以及Lasso回归进行的，通过这两种回归方法可以有效的消除特征之间的
+##多重共线性以及选择变量
+library(lars)
+library(ridge)
+x <- as.matrix(house[, 2:9])
+y <- as.matrix(house[, 1])
+##lars函数值用于矩阵型数据
+laa <- lars(x, y, type = "lar")
+plot(laa)
+laa
+##由上可知Lasso的变量选择依次为COC、AS、LOA、CM、TOWN、PD、EIA、GDP
+summary(laa)
+##由以上信息可知，在第七步cp指标(Mallows’s Cp)值最小,且残差RSS和比较小。第七步的结果是
+##除了GDP以外的其他变量，所以最终的变量选择是COC、AS、LOA、CM、TOWN、PD、EIA，根据得到
+##的结果，进行进一步的线性回归分析。
+
+ridge.sol <- lm.ridge(P ~ AS + TOWN + PD + EIA + COC + LOA + CM, data = house, 
+                      lambda = seq(0, 1, 0.001), model = TRUE)
+##声明变量名字
+names(ridge.sol)
+##找到GCV最小时的lambdaGCV
+ridge.sol$lambda[which.min(ridge.sol$GCV)] 
+##找到GCV最小时对应的系数
+ridge.sol$coef[which.min(ridge.sol$GCV)] 
+par(mfrow = c(1, 2))
+##画出图形，并作出lambdaGCV取最小值时的那条竖直线
+matplot(ridge.sol$lambda, t(ridge.sol$coef), xlab = expression(lamdba), 
+        ylab = "Cofficients", type = "l", lty = 1:20)
+abline(v = ridge.sol$lambda[which.min(ridge.sol$GCV)])
+##下面的语句绘出lambda同GCV之间关系的图形
+plot(ridge.sol$lambda, ridge.sol$GCV, type = "l", xlab = expression(lambda),
+     ylab = expression(beta))
+abline(v = ridge.sol$lambda[which.min(ridge.sol$GCV)])
+par(mfrow = c(1, 1))
+select(ridge.sol)
+##取GCV的值lambda = 0.209，进行岭回归模型拟合
+fit3 <- linearRidge(P ~ AS + TOWN + PD + EIA + COC + LOA + CM, data = house, lambda = 0.209)
+summary(fit3)
+##由于TOWN的相关系数不显著，故将其剔除再次进行上述步骤
+
+ridge.sol <- lm.ridge(P ~ AS + PD + EIA + COC + LOA + CM, data = house, 
+                      lambda = seq(0, 1, 0.001), model = TRUE)
+##声明变量名字
+names(ridge.sol)
+##找到GCV最小时的lambdaGCV
+ridge.sol$lambda[which.min(ridge.sol$GCV)] 
+##找到GCV最小时对应的系数
+ridge.sol$coef[which.min(ridge.sol$GCV)] 
+par(mfrow = c(1, 2))
+##画出图形，并作出lambdaGCV取最小值时的那条竖直线
+matplot(ridge.sol$lambda, t(ridge.sol$coef), xlab = expression(lamdba), 
+        ylab = "Cofficients", type = "l", lty = 1:20)
+abline(v = ridge.sol$lambda[which.min(ridge.sol$GCV)])
+##下面的语句绘出lambda同GCV之间关系的图形
+plot(ridge.sol$lambda, ridge.sol$GCV, type = "l", xlab = expression(lambda),
+     ylab = expression(beta))
+abline(v = ridge.sol$lambda[which.min(ridge.sol$GCV)])
+par(mfrow = c(1, 1))
+select(ridge.sol)
+##取GCV的值lambda = 0.233，进行岭回归模型拟合
+fit3 <- linearRidge(P ~ AS + PD + EIA + COC + LOA + CM, data = house, lambda = 0.233)
+summary(fit3)
+##此时所有自变量以及截距项相关系数均显著，得到对因变量P有偏的估计：
+##P = -1.57494 + 0.22548AS + 0.80734PD + 0.10133EIA + 0.1929COC + 0.28232LOA + 0.34366CM
